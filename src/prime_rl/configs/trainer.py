@@ -729,8 +729,30 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     ] = False
 
 
+class NIXLMxWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    """Configures NIXL (UCX/RDMA) weight transfer with Model Express rendezvous.
+
+    Model Express is used purely as a rendezvous + metadata store; the actual
+    sharded transfer is implemented in prime-rl on top of NIXL. The
+    conversion from trainer dtype to inference dtype is driven by the
+    per-model ``ConversionSpec`` table (no ``quantize_in_weight_transfer``
+    flag — quantization is implicit).
+    """
+
+    type: Literal["nixl_mx"] = "nixl_mx"
+    host: Annotated[str, Field(description="The host of the Model Express server.")] = "localhost"
+    port: Annotated[int, Field(description="The port of the Model Express server.")] = 29501
+    timeout: Annotated[
+        int,
+        Field(description="Timeout in seconds for rendezvous and per-step transfers."),
+    ] = 1200
+    # TODO: Should not be configurable, but auto-inferred
+    inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLMxWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

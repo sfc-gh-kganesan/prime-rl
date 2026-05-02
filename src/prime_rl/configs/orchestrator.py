@@ -818,8 +818,26 @@ class NCCLWeightBroadcastConfig(BaseModel):
     ] = 1
 
 
+class NIXLMxWeightBroadcastConfig(BaseModel):
+    """Configures the NIXL + Model Express weight broadcast (orchestrator side)."""
+
+    type: Literal["nixl_mx"] = "nixl_mx"
+
+    host: Annotated[str, Field(description="The host of the Model Express server.")] = "localhost"
+    port: Annotated[int, Field(description="The port of the Model Express server.")] = 29501
+    timeout: Annotated[
+        int,
+        Field(description="Timeout in seconds for rendezvous and per-step transfers."),
+    ] = 1200
+    inference_world_size: Annotated[
+        int,
+        Field(ge=1, description="Total number of inference GPUs across all servers."),
+    ] = 1
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLMxWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
