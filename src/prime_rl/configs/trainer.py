@@ -748,6 +748,10 @@ class NIXLMxWeightBroadcastConfig(BaseWeightBroadcastConfig):
     ] = 1200
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
+    inference_model_name: Annotated[
+        str,
+        Field(description="HF model name of the inference target (e.g. Qwen/Qwen3-235B-A22B-Thinking-2507-FP8)."),
+    ] = ""
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
