@@ -827,7 +827,7 @@ class NIXLMxWeightBroadcastConfig(BaseModel):
     type: Literal["nixl_mx"] = "nixl_mx"
 
     host: Annotated[str, Field(description="The host of the Model Express server.")] = "localhost"
-    port: Annotated[int, Field(description="The port of the Model Express server.")] = 29503
+    port: Annotated[int, Field(description="The port of the Model Express server.")] = 29501
     timeout: Annotated[
         int,
         Field(description="Timeout in seconds for rendezvous and per-step transfers."),
