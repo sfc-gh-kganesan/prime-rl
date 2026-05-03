@@ -53,6 +53,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 
@@ -275,9 +276,7 @@ def _patch_qwen3_5_linear_attn_varlen():
             pids = position_ids
             if pids.ndim == 3:
                 pids = pids[0]
-            flat = pids.view(-1)
-            seqlens = torch.cat([flat[0:1], flat[:-1][(flat == 0)[1:]] + 1, flat[-1:] + 1])
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            cu_seqlens, _ = get_cu_seqlens_from_position_ids(pids)
         kwargs["cu_seqlens"] = cu_seqlens
         return _text_orig(
             self,
@@ -1096,6 +1095,24 @@ def setup_model(
     return model
 
 
+def _get_qwen3_vl_mm_token_type_ids(model: nn.Module, input_ids: Tensor) -> Tensor | None:
+    config = getattr(model, "config", None)
+    if getattr(config, "model_type", None) != "qwen3_vl":
+        return None
+
+    mm_token_type_ids = torch.zeros_like(input_ids)
+
+    image_token_id = getattr(config, "image_token_id", None)
+    if image_token_id is not None:
+        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == image_token_id, 1)
+
+    video_token_id = getattr(config, "video_token_id", None)
+    if video_token_id is not None:
+        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == video_token_id, 2)
+
+    return mm_token_type_ids
+
+
 @jaxtyped(typechecker=typechecker)
 def forward(
     model: nn.Module,
@@ -1122,7 +1139,9 @@ def forward(
         assert image_grid_thw is not None, "pixel_values requires image_grid_thw for MRoPE computation"
         kwargs["pixel_values"] = pixel_values
         kwargs["image_grid_thw"] = image_grid_thw
-        kwargs["mm_token_type_ids"] = mm_token_type_ids
+        mm_token_type_ids = _get_qwen3_vl_mm_token_type_ids(model, input_ids)
+        if mm_token_type_ids is not None:
+            kwargs["mm_token_type_ids"] = mm_token_type_ids
     else:
         kwargs["position_ids"] = position_ids
 
