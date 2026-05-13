@@ -582,6 +582,26 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     return tokenizer
 
 
+def setup_processor(config: TokenizerConfig):
+    """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
+    from transformers import AutoProcessor
+
+    logger = get_logger()
+    try:
+        processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    except (ValueError, OSError, KeyError) as e:
+        logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
+        return None
+    # AutoProcessor returns a plain tokenizer object for text-only models. We
+    # only want the processor when it actually carries an image / video
+    # processor — gate on that.
+    if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
+        logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
+        return None
+    logger.info(f"Loaded multimodal processor: {type(processor).__name__}")
+    return processor
+
+
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
@@ -1144,7 +1164,11 @@ def forward(
         assert image_grid_thw is not None, "pixel_values requires image_grid_thw for MRoPE computation"
         kwargs["pixel_values"] = pixel_values
         kwargs["image_grid_thw"] = image_grid_thw
-        mm_token_type_ids = _get_qwen3_vl_mm_token_type_ids(model, input_ids)
+        # Prefer the caller-supplied mm_token_type_ids (computed by the renderer
+        # from placeholder ranges — exact). Fall back to the input-id sniffing
+        # helper, which only handles qwen3_vl but stays for back-compat.
+        if mm_token_type_ids is None:
+            mm_token_type_ids = _get_qwen3_vl_mm_token_type_ids(model, input_ids)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
     else:

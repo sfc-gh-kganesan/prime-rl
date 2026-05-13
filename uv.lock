@@ -25,12 +25,12 @@ color-codeword = false
 nixl-cu12 = false
 flash-attn-3 = false
 prime-tunnel = false
-prime = false
+prime-sandboxes = false
 deep-gemm = false
 aime2024 = false
 prime-evals = false
 deepdive = false
-prime-sandboxes = false
+prime = false
 reverse-text = false
 code-env = false
 mini-swe-agent-plus = false
@@ -2892,7 +2892,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
-    { name = "renderers", specifier = "==0.1.6" },
+    { name = "renderers", specifier = ">=0.1.7" },
     { name = "reverse-text", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
@@ -3378,7 +3378,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.6"
+version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3388,9 +3388,9 @@ dependencies = [
     { name = "tiktoken", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/a7/26162494dab2d7740ff02191cb87c30b68450fb154363c7f0a434e7f3ea9/renderers-0.1.6.tar.gz", hash = "sha256:b74bc3dc870bea3c37ff5b47826ace9b8dd608a4c1f56554c39be1b20b2c63dc", size = 163768, upload-time = "2026-05-07T14:12:36.634Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/5f/fdd86253f562ffdecbdb56cb8591961f0b82914a9abc4ebf43976befb891/renderers-0.1.7.tar.gz", hash = "sha256:d17ccbc3813dd0ee3a6f7d8794308bd4300eb2a80dbc01e83c8f47513e9614f0", size = 209731, upload-time = "2026-05-12T12:51:07.559Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/ad/2cf218b9fafe2333fb3e80e123e3e2022d4923d9a61fa73ee6d79f39b563/renderers-0.1.6-py3-none-any.whl", hash = "sha256:90c626713239ec108716b7c9d194ba81ffcebe94dc003324f14fbd70e6793e89", size = 83348, upload-time = "2026-05-07T14:12:35.218Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/71/af973d6fb806cc0f7e9f4d7cab3ed7265745e596298c8eab2185260c6979/renderers-0.1.7-py3-none-any.whl", hash = "sha256:64b119d13952df983462d72882aa97f1c7075fc4a7409a6b6b85ee88d83dfa52", size = 97934, upload-time = "2026-05-12T12:51:06.534Z" },
 ]
 
 [[package]]

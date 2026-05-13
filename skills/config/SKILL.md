@@ -153,6 +153,38 @@ uv run sft --data.type fake --data.batch-size 4
 
 If you wish to configure values of the default variant, you don't need to set the `type` field.
 
+### SFT with images (multimodal)
+
+SFT supports VLMs through the `renderers` package. Set `[model.vlm]` to opt in:
+
+```toml
+[model]
+name = "Qwen/Qwen3.5-0.8B"
+
+[model.vlm]
+freeze_vision_encoder = true  # required when combined with LoRA
+```
+
+The trainer uses `create_renderer(tokenizer, "auto")` to pick the right renderer from the tokenizer's model name (Qwen3.5, Qwen3-VL, GLM, etc.). Image content blocks in `messages` are auto-resolved to pixel features by the renderer's processor; no prime-rl-side code knows about specific VLMs.
+
+Constraints (enforced by validators in `SFTConfig.validate_vlm_constraints`):
+- `data.micro_batch_size = 1` and `val.data.micro_batch_size = 1` (image samples can't be packed across samples — pixel buffers are variable per image).
+- `model.cp = 1` (sequence sharding would split images across ranks).
+- LoRA requires `model.vlm.freeze_vision_encoder = true` (a separate validator in `trainer.py`).
+
+Loading local data files (e.g. JSONL or JSONL.zst):
+
+```toml
+[data]
+type = "sft"
+name = "json"
+data_files = ["/path/to/file.jsonl.zst"]
+```
+
+`.zst` files are transparently decompressed to `$TMPDIR` before `load_dataset("json", data_files=...)`.
+
+The renderer also handles tool calls and tool messages — OpenAI-format `tool_calls[].function.arguments` may be either a JSON string or a dict; the renderer accepts both.
+
 ### SFT hard distill override
 
 For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fixed, the orchestrator exposes a per-run override that forces SFT loss on every micro-batch without rebuilding the trainer. Set `orchestrator.use_sft_loss = true` alongside `orchestrator.teacher_rollout_model`; both must be configured together (the orchestrator validator enforces this). The orchestrator stamps each `TrainingSample.sft_loss = True`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch — independent of the trainer's configured default loss.
