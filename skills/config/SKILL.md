@@ -185,6 +185,32 @@ data_files = ["/path/to/file.jsonl.zst"]
 
 The renderer also handles tool calls and tool messages — OpenAI-format `tool_calls[].function.arguments` may be either a JSON string or a dict; the renderer accepts both.
 
+### MoE + activation checkpointing trap
+
+`[model.ac] mode = "full"` (the default) is **not safe** for MoE models. `torch.utils.checkpoint` raises mid-training:
+
+```
+torch.utils.checkpoint.CheckpointError:
+  Recomputed values for the following tensors have different metadata than during the forward pass.
+```
+
+Root cause: the token-choice router does `topk` over near-tied bf16 scores. GPU bf16 matmul reduction order is non-deterministic, so the same input produces slightly different gate logits on the second call (forward vs activation-checkpoint recompute). Different winning experts → different `num_tokens_per_expert` → per-expert tensor shapes don't match between forward-saved and backward-recomputed → backward dies. The bug is in the MoE side, not the checkpoint wrapper. See [PyTorch #171355](https://github.com/pytorch/pytorch/issues/171355).
+
+The fix is to **not** activation-checkpoint the MoE block. Use selective AC and exclude `routed_experts`:
+
+```toml
+[model.ac]
+mode = "selective"
+freq = 1
+# Skip routed_experts: MoE recompute drifts between forward and backward.
+# Keep norm/attn_proj/linear_attn to recover most of the memory savings.
+targets = ["norm", "attn_proj", "linear_attn"]
+```
+
+Trade-off: MoE outputs and per-expert intermediates stay in memory across forward → backward, so peak usage rises. For Qwen3.5-35B-A3B at seq_len=32k, 8x B300 (275 GiB each), we measured ~126 GiB peak with full AC vs ~249 GiB with selective AC excluding `routed_experts`. Plan accordingly.
+
+This is **not Blackwell-specific** and **not VLM-specific** — anyone training any MoE model with full AC will hit it eventually (the per-step crash probability is roughly proportional to the number of router invocations).
+
 ### SFT hard distill override
 
 For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fixed, the orchestrator exposes a per-run override that forces SFT loss on every micro-batch without rebuilding the trainer. Set `orchestrator.use_sft_loss = true` alongside `orchestrator.teacher_rollout_model`; both must be configured together (the orchestrator validator enforces this). The orchestrator stamps each `TrainingSample.sft_loss = True`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch — independent of the trainer's configured default loss.
