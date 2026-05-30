@@ -764,6 +764,11 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
     from vllm.v1.engine.core import DPEngineCoreProc, EngineCore, EngineCoreProc
     from vllm.v1.request import Request
 
+    if not hasattr(EngineCoreProc, "_pause_complete"):
+        # vLLM 0.18+ replaced _pause_complete with pause_scheduler/is_scheduler_paused
+        # and the upstream two-phase DP pause from #39366 supersedes this workaround.
+        return
+
     _base_add_request = EngineCore.add_request
     _base_handle_client_request = EngineCoreProc._handle_client_request
     _base_pause_complete = EngineCoreProc._pause_complete

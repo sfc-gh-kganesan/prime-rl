@@ -155,6 +155,12 @@ class ClientConfig(BaseConfig):
     router_url: str | None = None
     """vllm-router URL for load-aware inference routing. With elastic mode, inference requests go through the router while admin ops still hit discovered pods directly."""
 
+    client_type: str | None = None
+    """Override the verifiers client_type used for rollouts. None (default) uses the orchestrator's renderer/MITO selection. Set to ``"custom"`` to load a user-provided ``verifiers.Client`` subclass via ``class_path`` — used by external integrations (e.g. the Arctic RL backend) that plug in their own rollout client."""
+
+    class_path: str | None = None
+    """Dotted path to a ``verifiers.Client`` subclass. Only consulted when ``client_type="custom"``."""
+
     @property
     def is_elastic(self) -> bool:
         """Check if elastic mode is enabled."""

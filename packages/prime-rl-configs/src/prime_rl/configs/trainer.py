@@ -484,6 +484,9 @@ class TrainerExperimentalConfig(BaseConfig):
 
 
 class TrainerConfig(BaseConfig):
+    backend: str = "native"
+    """Training backend. ``"native"`` (default) is the standard PRIME-RL torchrun+FSDP2 path; any other value names an installed integration package whose ``<name>.entrypoint:main`` is dispatched to by the launcher."""
+
     model: ModelConfig = ModelConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()

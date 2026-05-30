@@ -206,6 +206,7 @@ def setup_clients(
                 vf.ClientConfig(
                     client_idx=client_idx,
                     client_type=client_type,
+                    class_path=client_config.class_path,
                     renderer=renderer_name,
                     renderer_model_name=renderer_model_name,
                     renderer_pool_size=renderer_pool_size,
