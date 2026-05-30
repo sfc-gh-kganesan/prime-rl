@@ -1,0 +1,14 @@
+# Activate ZoRRO prompt deduplication on top of arctic_overlay.toml.
+#
+# Stack on top of the standard arctic overlay:
+#
+#   uv run rl @ examples/reverse_text/rl.toml \
+#     @ integrations/arctic-rl/examples/arctic_overlay.toml \
+#     @ integrations/arctic-rl/examples/arctic_zorro_overlay.toml
+#
+# Sets ds_worker_config.use_zorro=True so the Arctic RL server patches its
+# Qwen3 model with Qwen3ModelOncePatcher and deduplicates shared prompt
+# tokens across rollouts during the training forward pass.
+
+[arctic]
+use_zorro = true

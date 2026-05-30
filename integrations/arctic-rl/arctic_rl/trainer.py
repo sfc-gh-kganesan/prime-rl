@@ -119,6 +119,22 @@ class ArcticTrainerAdapter:
 
         self.client = build_arctic_client(arctic_cfg, trainer_cfg)
 
+        # Resolve the ZoRRO response_len (the response-region width the server's
+        # patcher splits on) the same way the client builds ds_worker_config:
+        # explicit config, else orchestrator.train.sampling.max_completion_tokens.
+        self._zorro_response_len = None
+        if arctic_cfg.use_zorro:
+            from arctic_rl.client import _read_orchestrator_toml
+
+            orch = _read_orchestrator_toml() or {}
+            self._zorro_response_len = arctic_cfg.zorro_response_len or (
+                orch.get("train", {}).get("sampling", {}).get("max_completion_tokens")
+                or orch.get("eval", {}).get("sampling", {}).get("max_completion_tokens")
+            )
+            assert self._zorro_response_len, "use_zorro requires a resolvable response_len"
+            self._zorro_response_len = int(self._zorro_response_len)
+            logger.info("ZoRRO response_len resolved to {}", self._zorro_response_len)
+
         # Dummy single-parameter optimizer used only to drive the LR schedule.
         # The actual optimizer lives server-side; we pass the computed LR via
         # adam_params on each /step call, which overrides the server's own LR.
@@ -133,23 +149,23 @@ class ArcticTrainerAdapter:
         # broadcast directory layout.
         self.broadcast_dir = Path(trainer_cfg.output_dir) / "run_default" / "broadcasts"
 
-        # ArcticRLClientConfig marks job ID fields as Field(exclude=True),
-        # so model_dump_json() drops them — build the payload manually.
+        # Old-API ArcticRLClient owns the server subprocess and exposes job IDs
+        # directly. The verifiers backend reads these from a small reconnect.json
+        # written here so the orchestrator process can attach.
         reconnect_path = Path(trainer_cfg.output_dir) / "configs" / "reconnect.json"
         reconnect_path.parent.mkdir(parents=True, exist_ok=True)
-        rc = self.client.reconnect_config()
         import json as _json
 
         reconnect_path.write_text(
             _json.dumps(
                 {
-                    "host": rc.host,
-                    "port": rc.port,
-                    "backend": rc.backend,
-                    "model_name": rc.model_name,
-                    "training_job_id": rc.training_job_id,
-                    "sampling_job_id": rc.sampling_job_id,
-                    "log_prob_job_id": rc.log_prob_job_id,
+                    "host": self.client.config.host,
+                    "port": self.client.config.port,
+                    "backend": self.client.config.backend,
+                    "model_name": self.client.config.model_name,
+                    "training_job_id": self.client.training_job_id,
+                    "sampling_job_id": self.client.sampling_job_id,
+                    "log_prob_job_id": self.client.log_prob_job_id,
                 }
             )
         )
@@ -163,21 +179,19 @@ class ArcticTrainerAdapter:
             self.loader.wait_for_batch()
             mbs = self.loader.get_batch()
 
-            processing = {
-                "loss_fn": "arctic_training.arctic_rl.processors.grpo_loss",
-                "config": build_grpo_loss_config(
-                    current_version=step,
-                    use_cispo=self.arctic_cfg.use_cispo_loss,
-                    loss_agg_mode=self.arctic_cfg.loss_agg_mode,
-                ),
-                "post": ["compute_logprobs"],
-            }
+            processing_config = build_grpo_loss_config(
+                current_version=step,
+                use_cispo=self.arctic_cfg.use_cispo_loss,
+                loss_agg_mode=self.arctic_cfg.loss_agg_mode,
+            )
 
             # Send all rollouts in one consolidated [B_total, max_S] batch
             # so the server's torch.chunk(dim=0, world_size) splits cleanly.
             # The server repacks per DP shard before the model forward, so
             # activation memory matches a per-microbatch packed call.
-            kwargs = microbatches_to_arctic_context(mbs)
+            kwargs = microbatches_to_arctic_context(
+                mbs, use_zorro=self.arctic_cfg.use_zorro, response_len=self._zorro_response_len
+            )
             logger.info(
                 "Step {} — /fwd-bwd (B={}, S={}, across {} source microbatch(es))",
                 step,
@@ -191,20 +205,34 @@ class ArcticTrainerAdapter:
             current_lr = self._optim.param_groups[0]["lr"]
             (self.broadcast_dir.parent / "last_lr").write_text(str(current_lr))
 
-            result = self.client.fwd_bwd({"args": (), "kwargs": kwargs}, processing=processing)
+            # arctic_rl (tunji/skyrl_integration) wire format: the server's
+            # unpack_batch maps batch["batch"] -> model-forward kwargs and
+            # batch["meta"] -> context (loss tensors, NOT sent to the model).
+            # grpo self-computes logprobs from logits, so no compute_logprobs post.
+            # position_ids is required by ZoRRO's Qwen3ModelOncePatcher.
+            model_kwargs = {
+                "input_ids": kwargs["input_ids"],
+                "attention_mask": kwargs["attention_mask"],
+            }
+            if "position_ids" in kwargs:
+                model_kwargs["position_ids"] = kwargs["position_ids"]
+            context = {
+                "input_ids": kwargs["input_ids"],
+                "loss_mask": kwargs["loss_mask"],
+                "advantages": kwargs["advantages"],
+            }
+            if "old_log_probs_shifted" in kwargs:
+                context["old_log_probs_shifted"] = kwargs["old_log_probs_shifted"]
+
+            result = self.client.fwd_bwd(
+                {"batch": model_kwargs, "meta": context},
+                processing={"loss_fn": "grpo", "post": [], "config": processing_config},
+            )
             avg_loss = result.get("avg_loss") or result.get("loss") or float("nan")
             logger.info("Step {} — avg_loss={:.4f}", step, avg_loss)
 
             logger.info("Step {} — /step", step)
-            # Older ArcticRLClient.step() takes no kwargs; newer accepts learning_rate.
-            import inspect as _inspect
-            try:
-                if "learning_rate" in _inspect.signature(self.client.step).parameters:
-                    step_result = self.client.step(learning_rate=current_lr) or {}
-                else:
-                    step_result = self.client.step() or {}
-            except (TypeError, ValueError):
-                step_result = self.client.step() or {}
+            step_result = self.client.step() or {}
 
             if step > 0:
                 logger.info("Step {} — /sync-weights", step)

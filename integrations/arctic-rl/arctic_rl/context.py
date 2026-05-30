@@ -8,6 +8,8 @@ and zero the loss mask at the wrap-around position.
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 from arctic_rl.unpack import iter_rollout_slices, unpack_packed_microbatch
@@ -48,15 +50,105 @@ def _extract_and_roll_rollout(mb: TensorMicroBatch, start: int, end: int) -> dic
     return out
 
 
-def microbatches_to_arctic_context(mbs: list[TensorMicroBatch]) -> dict:
+def _zorro_layout(mbs: list[TensorMicroBatch], response_len: int) -> dict:
+    """Reformat prime-rl's variable [prompt|response] rollouts into the rigid
+    ``[left-pad prompt | right-pad response]`` layout ZoRRO's Qwen3ModelOncePatcher
+    requires (prompt_len = seq_len - response_len; response = last response_len tokens).
+
+    The patcher's ``find_prompt_groups`` dedups rollouts whose ``input_ids[:, :prompt_len]``
+    are byte-identical, so prompts must be LEFT-padded to a uniform max_prompt_len
+    (right-aligned to the prompt/response boundary). RL tensors (old_log_probs,
+    advantages, loss_mask) are response-only, placed in the response region.
+
+    ARCTIC_ZORRO_SHIFT env toggles the response-region roll convention (0 = none,
+    matching verl's response-only tensors; -1 = next-token roll). Settled empirically.
+    """
+    shift = int(os.environ.get("ARCTIC_ZORRO_SHIFT", "0"))
+
+    rollouts: list[dict] = []
+    example_ids: list[int] = []
+    for mb in mbs:
+        mb_ids = mb.get("example_ids") or []
+        for i, (start, end) in enumerate(iter_rollout_slices(mb)):
+            ids = mb["input_ids"][0, start:end]
+            lm = mb["loss_mask"][0, start:end].bool()
+            resp_idx = lm.nonzero(as_tuple=True)[0]
+            if resp_idx.numel() == 0:
+                continue
+            r0, r1 = int(resp_idx[0]), int(resp_idx[-1]) + 1
+            rollouts.append(
+                {
+                    "prompt_ids": ids[:r0].clone(),
+                    "resp_ids": ids[r0:r1].clone(),
+                    "resp_lp": mb["inference_logprobs"][0, start:end][r0:r1].clone(),
+                    "resp_adv": mb["advantages"][0, start:end][r0:r1].clone(),
+                }
+            )
+            if i < len(mb_ids):
+                example_ids.append(mb_ids[i])
+
+    assert rollouts, "Expected at least one rollout with response tokens"
+    max_plen = max(r["prompt_ids"].shape[0] for r in rollouts)
+    seq = max_plen + response_len
+    b = len(rollouts)
+    dev = rollouts[0]["prompt_ids"].device
+
+    input_ids = torch.full((b, seq), 1, dtype=torch.long, device=dev)
+    attn = torch.zeros((b, seq), dtype=torch.long, device=dev)
+    old_lp = torch.zeros((b, seq), dtype=torch.float32, device=dev)
+    adv = torch.zeros((b, seq), dtype=torch.float32, device=dev)
+    loss_mask = torch.zeros((b, seq), dtype=torch.bool, device=dev)
+
+    for i, r in enumerate(rollouts):
+        pl = r["prompt_ids"].shape[0]
+        rl = min(r["resp_ids"].shape[0], response_len)
+        # prompt left-padded (right-aligned, ending at the prompt/response boundary)
+        input_ids[i, max_plen - pl : max_plen] = r["prompt_ids"]
+        attn[i, max_plen - pl : max_plen] = 1
+        # response left-aligned in the response region (right-padded)
+        input_ids[i, max_plen : max_plen + rl] = r["resp_ids"][:rl]
+        attn[i, max_plen : max_plen + rl] = 1
+        rlp = r["resp_lp"][:rl]
+        rad = r["resp_adv"][:rl]
+        rmask = torch.ones(rl, dtype=torch.bool, device=dev)
+        if shift:
+            rlp = torch.roll(rlp, shifts=shift, dims=-1)
+            rad = torch.roll(rad, shifts=shift, dims=-1)
+            if shift < 0:
+                rmask[shift:] = False  # wrapped tail is not a valid target
+        old_lp[i, max_plen : max_plen + rl] = rlp
+        adv[i, max_plen : max_plen + rl] = rad
+        loss_mask[i, max_plen : max_plen + rl] = rmask
+
+    position_ids = (attn.cumsum(-1) - 1).clamp(min=0)
+    out = {
+        "input_ids": input_ids,
+        "attention_mask": attn,
+        "position_ids": position_ids,
+        "old_log_probs_shifted": old_lp,
+        "advantages": adv,
+        "loss_mask": loss_mask,
+    }
+    if len(example_ids) == b:
+        out["prompt_group_ids"] = torch.tensor(example_ids, dtype=torch.long)
+    return out
+
+
+def microbatches_to_arctic_context(
+    mbs: list[TensorMicroBatch], use_zorro: bool = False, response_len: int | None = None
+) -> dict:
     """Consolidate all rollouts from a list of packed microbatches into one `[B, max_S]` batch.
 
-    Output:
-        A dict of `[B_total, max_S]` tensors where `B_total = sum of rollouts
-        across all mbs` (trailing pad per mb is dropped) and `max_S` is the
-        longest rollout across the batch. Includes a real `attention_mask`.
+    When ``use_zorro`` is True, routes to :func:`_zorro_layout`, which produces the
+    rigid ``[left-pad prompt | right-pad response]`` layout the server's
+    Qwen3ModelOncePatcher requires (response = last ``response_len`` tokens). Otherwise
+    produces the standard per-rollout ``[B, max_S]`` rolled layout.
     """
     assert mbs, "Expected at least one microbatch"
+
+    if use_zorro:
+        assert response_len is not None, "use_zorro requires response_len"
+        return _zorro_layout(mbs, response_len)
 
     rollouts: list[dict] = []
     raw_example_ids: list[int] = []
@@ -91,6 +183,16 @@ def microbatches_to_arctic_context(mbs: list[TensorMicroBatch]) -> dict:
     # averaging across rollouts. Only present when all rollouts carried an example_id.
     if len(raw_example_ids) == b:
         out["prompt_group_ids"] = torch.tensor(raw_example_ids, dtype=torch.long)
+
+    if use_zorro and len(raw_example_ids) == b:
+        # Group rollout-row indices by shared example_id. Useful for client-side
+        # diagnostics and as the pre-computed groups an alternative server path
+        # (DedupActorWrapper) could consume. The Qwen3ModelOncePatcher path
+        # currently ignores this and rebuilds groups from input_ids itself.
+        groups: dict[int, list[int]] = {}
+        for row, eid in enumerate(raw_example_ids):
+            groups.setdefault(int(eid), []).append(row)
+        out["zorro_prompt_groups"] = list(groups.values())
 
     return out
 

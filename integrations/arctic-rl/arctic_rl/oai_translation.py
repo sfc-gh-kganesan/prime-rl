@@ -42,7 +42,6 @@ def oai_sampling_params(body: dict) -> dict:
         "repetition_penalty",
         "include_stop_str_in_output",
         "skip_special_tokens",
-        "return_sampled_logprobs_only",
     ):
         if key in body:
             params[key] = body[key]

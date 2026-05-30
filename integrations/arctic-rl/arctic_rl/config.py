@@ -83,3 +83,69 @@ class ArcticConfig(BaseConfig):
             )
         ),
     ] = "token-mean"
+
+    use_zorro: Annotated[
+        bool,
+        Field(
+            description=(
+                "Activate ZoRRO prompt deduplication on the Arctic RL training engine. "
+                "When True, the integration sets ds_worker_config.use_zorro=True at "
+                "/initialize time so the server patches the model with Qwen3ModelOncePatcher, "
+                "which deduplicates shared prompt tokens across rollouts during the forward "
+                "pass. Requires the orchestrator's rollouts_per_example > 1 to do useful work."
+            )
+        ),
+    ] = False
+
+    zorro_response_len: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Padded response length the server uses to split prompt vs response in each "
+                "row when use_zorro=True. Defaults to orchestrator.train.sampling."
+                "max_completion_tokens when omitted (read from orchestrator.toml at trainer "
+                "startup). Override only when the auto-detected value is wrong."
+            ),
+        ),
+    ] = None
+
+    zorro_rollout_n: Annotated[
+        int | None,
+        Field(
+            description=(
+                "rollouts_per_example forwarded to the ZoRRO patcher. Defaults to "
+                "orchestrator.rollouts_per_example."
+            ),
+        ),
+    ] = None
+
+    zorro_temperature: Annotated[
+        float | None,
+        Field(
+            description=(
+                "Sampling temperature forwarded to the ZoRRO patcher. Defaults to "
+                "orchestrator.train.sampling.temperature."
+            ),
+        ),
+    ] = None
+
+    zorro_tiled_logits_compute: Annotated[
+        bool,
+        Field(
+            description="Pass through to Qwen3ModelOncePatcher; tiles the lm_head forward to cap logits memory.",
+        ),
+    ] = True
+
+    zorro_use_unpad: Annotated[
+        bool,
+        Field(
+            description="Pass through to Qwen3ModelOncePatcher; uses the unpadded packed-sequence path.",
+        ),
+    ] = True
+
+    zorro_use_autocast: Annotated[
+        bool,
+        Field(
+            description="Enable torch.autocast(bfloat16) inside the ZoRRO worker forward.",
+        ),
+    ] = False

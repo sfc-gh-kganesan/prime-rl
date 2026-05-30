@@ -325,9 +325,17 @@ class _ArcticGenerateBatcher:
         routing_key: list[str | None],
         strict: bool,
     ) -> list[dict[str, Any]]:
+        # ReplicaPool.generate expects a single sampling_params dict broadcast
+        # across the batch, not a per-prompt list. The orchestrator builds the
+        # batch from one config so all entries are identical in practice.
+        if any(p != sampling_params[0] for p in sampling_params[1:]):
+            raise RuntimeError(
+                "Arctic /generate does not support per-prompt sampling_params; "
+                "all entries in the batch must match."
+            )
         payload: dict[str, Any] = {
             "prompts": prompts,
-            "sampling_params": sampling_params,
+            "sampling_params": sampling_params[0] if sampling_params else {},
         }
         if any(key is not None for key in routing_key):
             payload["routing_key"] = routing_key
@@ -370,9 +378,14 @@ class _ArcticGenerateBatcher:
         strict: bool,
         loop: asyncio.AbstractEventLoop,
     ) -> None:
+        if any(p != sampling_params[0] for p in sampling_params[1:]):
+            raise RuntimeError(
+                "Arctic /generate-stream does not support per-prompt sampling_params; "
+                "all entries in the batch must match."
+            )
         payload: dict[str, Any] = {
             "prompts": prompts,
-            "sampling_params": sampling_params,
+            "sampling_params": sampling_params[0] if sampling_params else {},
         }
         if any(key is not None for key in routing_key):
             payload["routing_key"] = routing_key
@@ -665,7 +678,7 @@ def _normalize_sampling_args(raw_sampling_args: Any) -> dict[str, Any]:
     if "max_tokens" in normalized:
         normalized["max_completion_tokens"] = normalized.pop("max_tokens")
     normalized["logprobs"] = True
-    extra_body = dict(return_token_ids=True, return_sampled_logprobs_only=True)
+    extra_body = dict(return_token_ids=True)
     if "extra_body" in normalized:
         normalized["extra_body"] = {
             **normalized["extra_body"],
