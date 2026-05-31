@@ -551,8 +551,48 @@ def rl(config: RLConfig):
         rl_local(config)
 
 
+def _peek_backend(argv: list[str]) -> str:
+    """Read ``trainer.backend`` from ``@<file>.toml`` and CLI overrides.
+
+    Run before strict config parse so integrations can extend ``RLConfig``
+    with their own fields without the core schema rejecting them.
+    """
+    import tomli
+
+    backend = "native"
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "@" and i + 1 < len(argv):
+            path, i = argv[i + 1], i + 2
+        elif token.startswith("@") and len(token) > 1:
+            path, i = token[1:], i + 1
+        else:
+            i += 1
+            continue
+        try:
+            with open(path, "rb") as f:
+                data = tomli.load(f)
+            tb = (data.get("trainer") or {}).get("backend")
+            if isinstance(tb, str):
+                backend = tb
+        except Exception:
+            pass
+    for j, arg in enumerate(argv):
+        if arg.startswith("--trainer.backend="):
+            backend = arg.split("=", 1)[1]
+        elif arg == "--trainer.backend" and j + 1 < len(argv):
+            backend = argv[j + 1]
+    return backend
+
+
 def main():
     set_proc_title("Launcher")
+    backend = _peek_backend(sys.argv[1:])
+    if backend != "native":
+        from importlib import import_module
+
+        return import_module(f"{backend}.entrypoint").main()
     rl(cli(RLConfig))
 
 

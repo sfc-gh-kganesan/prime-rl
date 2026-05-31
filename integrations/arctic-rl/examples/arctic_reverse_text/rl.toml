@@ -1,0 +1,59 @@
+# Minimal Arctic-mode example: routes forward/backward and rollouts to a
+# remote Arctic RL server instead of running a local trainer + vLLM.
+#
+# How dispatch works:
+#   trainer.backend = "arctic_rl" tells PRIME-RL's launcher to dispatch to
+#   `arctic_rl.entrypoint:main` (this integration). When unset (or "native"),
+#   PRIME-RL runs the standard torchrun+FSDP2 + vLLM path.
+#
+# Setup: install this integration package and the Arctic RL client; start
+# an Arctic RL server reachable at the URL below. See README.md.
+#
+# Then:
+#   uv run rl @ integrations/arctic-rl/examples/arctic_reverse_text/rl.toml
+
+max_steps = 30
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "primerl-arctic-reverse-text"
+name = "primerl-arctic-reverse-text"
+
+[trainer]
+backend = "arctic_rl"
+
+[arctic]
+backend = "remote"
+url = "http://localhost:7000"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.advantage]
+type = "default"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[trainer.optim]
+lr = 3e-6
+
+[trainer.scheduler]
+type = "cosine"
+warmup_steps = 10
+
+[ckpt]
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+
+# NOTE: no [inference] block — Arctic mode replaces the native inference server.
+#       Validators reject the combination of [arctic] + [inference].

@@ -886,6 +886,22 @@ async def setup_student_inference_pool(
     client_config = config.student.client
     model_name = config.student.model.name
 
+    if client_config.client_type is not None:
+        logger.info(f"Using custom rollout client_type={client_config.client_type!r}")
+        inference_pool = await setup_inference_pool(
+            client_config,
+            model_name=model_name,
+            train_client_type=client_config.client_type,
+            eval_client_type=client_config.client_type,
+        )
+        # Custom clients (e.g. Arctic RL) manage their own weight sync via
+        # the trainer-side backend; the orchestrator's HTTP-pause + filesystem
+        # broadcast flow doesn't apply.
+        async def _noop_update_weights(*args, **kwargs):
+            return None
+        inference_pool.update_weights = _noop_update_weights
+        return None, inference_pool
+
     if config.use_renderer:
         renderer = create_renderer(
             tokenizer,

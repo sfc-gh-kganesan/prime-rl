@@ -1,0 +1,22 @@
+# Arctic backend overlay snippet.
+#
+# Apply on top of any standard prime-rl recipe to flip dispatch to the
+# Arctic RL backend without editing the base recipe:
+#
+#   uv run rl @ configs/gsm8k/rl.toml @ integrations/arctic-rl/examples/arctic_overlay.toml
+#
+# The base recipe's `[inference]` block is silently ignored in Arctic mode
+# (Arctic owns sampling). The launcher's `_peek_backend` reads `trainer.backend`
+# from the @-files, so this overlay must be passed via @.
+#
+# Restrictions still enforced: no LoRA, no multi-run, no multi-node, no
+# `[teacher_inference]`. Recipes using any of those need explicit edits.
+
+[trainer]
+backend = "arctic_rl"
+
+[arctic]
+backend = "local"                  # spawns the Arctic RL server in-process
+training_gpus = 1
+sampling_tensor_parallel_size = 1
+log_prob_gpus = 0                  # disables the separate log-prob job
