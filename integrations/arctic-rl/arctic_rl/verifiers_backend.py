@@ -333,8 +333,13 @@ class _ArcticGenerateBatcher:
                 "Arctic /generate does not support per-prompt sampling_params; "
                 "all entries in the batch must match."
             )
+        # verl_integration's /generate schema is `prompts: List[str]`, so decode
+        # token-id prompts to text. Safe for RL: the loss masks prompt tokens, and
+        # ZoRRO dedups on (consistent) prompt text; only response tokens matter.
+        tok = _ensure_verifiers_tokenizer()
+        text_prompts = [tok.decode(p, skip_special_tokens=False) for p in prompts]
         payload: dict[str, Any] = {
-            "prompts": prompts,
+            "prompts": text_prompts,
             "sampling_params": sampling_params[0] if sampling_params else {},
         }
         if any(key is not None for key in routing_key):
@@ -383,8 +388,10 @@ class _ArcticGenerateBatcher:
                 "Arctic /generate-stream does not support per-prompt sampling_params; "
                 "all entries in the batch must match."
             )
+        tok = _ensure_verifiers_tokenizer()
+        text_prompts = [tok.decode(p, skip_special_tokens=False) for p in prompts]
         payload: dict[str, Any] = {
-            "prompts": prompts,
+            "prompts": text_prompts,
             "sampling_params": sampling_params[0] if sampling_params else {},
         }
         if any(key is not None for key in routing_key):

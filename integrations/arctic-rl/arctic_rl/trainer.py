@@ -9,6 +9,7 @@ unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 from pathlib import Path
@@ -24,6 +25,11 @@ from arctic_rl.loss_config import build_grpo_loss_config
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.scheduler import setup_scheduler
+
+
+def _run_async(coro):
+    """Run an async ArcticRL HTTP-client coroutine to completion from sync code."""
+    return asyncio.run(coro)
 
 
 def _get_free_port() -> int:
@@ -123,6 +129,7 @@ class ArcticTrainerAdapter:
         # patcher splits on) the same way the client builds ds_worker_config:
         # explicit config, else orchestrator.train.sampling.max_completion_tokens.
         self._zorro_response_len = None
+        self._zorro_meta: dict = {}
         if arctic_cfg.use_zorro:
             from arctic_rl.client import _read_orchestrator_toml
 
@@ -133,7 +140,29 @@ class ArcticTrainerAdapter:
             )
             assert self._zorro_response_len, "use_zorro requires a resolvable response_len"
             self._zorro_response_len = int(self._zorro_response_len)
-            logger.info("ZoRRO response_len resolved to {}", self._zorro_response_len)
+
+            rollout_n = int(arctic_cfg.zorro_rollout_n or orch.get("rollouts_per_example", 1))
+            temperature = float(
+                arctic_cfg.zorro_temperature
+                if arctic_cfg.zorro_temperature is not None
+                else orch.get("train", {}).get("sampling", {}).get("temperature", 1.0)
+            )
+            from transformers import AutoTokenizer as _AT
+
+            _tok = _AT.from_pretrained(trainer_cfg.tokenizer.name)
+            pad_id = _tok.pad_token_id if _tok.pad_token_id is not None else (_tok.eos_token_id or 0)
+            # Static meta the AT-dss server reads for the ZoRRO + grpo path.
+            self._zorro_meta = {
+                "pad_token_id": int(pad_id),
+                "temperature": temperature,
+                "use_zorro": True,
+                "rollout_n": rollout_n,
+                "zorro_max_rollouts": rollout_n,
+                "max_response_len": self._zorro_response_len,
+                "calculate_entropy": False,
+                "rollout_is_weights": None,
+            }
+            logger.info("ZoRRO meta: {}", self._zorro_meta)
 
         # Dummy single-parameter optimizer used only to drive the LR schedule.
         # The actual optimizer lives server-side; we pass the computed LR via
@@ -210,33 +239,66 @@ class ArcticTrainerAdapter:
             # batch["meta"] -> context (loss tensors, NOT sent to the model).
             # grpo self-computes logprobs from logits, so no compute_logprobs post.
             # position_ids is required by ZoRRO's Qwen3ModelOncePatcher.
+            # verl_integration contract: the server forwards `engine(**batch, **meta)`
+            # and calls `verl_grpo_loss(model_outputs, batch, meta, config, device)`.
+            # RL tensors go in `batch` with verl names (response_mask/old_log_probs/
+            # advantages); the ZoRRO patched forward ignores the extras and supplies
+            # `logprobs`. `meta` carries config only. batch/meta must not share keys.
             model_kwargs = {
                 "input_ids": kwargs["input_ids"],
                 "attention_mask": kwargs["attention_mask"],
+                "response_mask": kwargs["loss_mask"],
+                "advantages": kwargs["advantages"],
             }
             if "position_ids" in kwargs:
                 model_kwargs["position_ids"] = kwargs["position_ids"]
-            context = {
-                "input_ids": kwargs["input_ids"],
-                "loss_mask": kwargs["loss_mask"],
-                "advantages": kwargs["advantages"],
-            }
-            if "old_log_probs_shifted" in kwargs:
-                context["old_log_probs_shifted"] = kwargs["old_log_probs_shifted"]
+            if "prompts" in kwargs:
+                model_kwargs["prompts"] = kwargs["prompts"]
 
-            result = self.client.fwd_bwd(
-                {"batch": model_kwargs, "meta": context},
-                processing={"loss_fn": "grpo", "post": [], "config": processing_config},
+            seq_len = kwargs["input_ids"].shape[1]
+            b = kwargs["input_ids"].shape[0]
+            context = dict(self._zorro_meta)
+            context.setdefault("actor_config", {})
+            context.setdefault("policy_loss_config", {})
+            context["batch_num_tokens"] = int(kwargs["loss_mask"].sum().item())
+            context["global_batch_size"] = b
+            if self._zorro_meta:
+                context["max_prompt_len"] = seq_len - self._zorro_response_len
+                context["max_token_len_per_gpu"] = seq_len * b
+
+            # Compute old_log_probs from the CURRENT training policy (a no-grad
+            # forward), NOT from the sampler's rollout logprobs. This makes the PPO
+            # importance ratio exp(new-old) ≈ 1 at the gradient step, eliminating the
+            # vLLM↔DeepSpeed logprob gap that otherwise biases verl_grpo and causes
+            # the policy to drift/collapse after the initial reward rise.
+            nograd_kwargs = {k: v for k, v in model_kwargs.items() if k != "old_log_probs"}
+            nograd_resp = _run_async(
+                self.client.fwd_no_grad(
+                    {"batch": nograd_kwargs, "meta": context, "processing": {"post": [], "loss_fn": None}},
+                    reference_model=False,
+                )
+            )
+            old_lp = nograd_resp.get("batch", nograd_resp).get("logprobs")
+            if old_lp is not None:
+                model_kwargs["old_log_probs"] = old_lp.to(kwargs["advantages"].device)
+            else:
+                model_kwargs["old_log_probs"] = torch.zeros_like(kwargs["advantages"])
+
+            result = _run_async(
+                self.client.fwd_bwd(
+                    {"batch": model_kwargs, "meta": context},
+                    processing={"loss_fn": "verl_grpo", "post": [], "config": processing_config},
+                )
             )
             avg_loss = result.get("avg_loss") or result.get("loss") or float("nan")
             logger.info("Step {} — avg_loss={:.4f}", step, avg_loss)
 
             logger.info("Step {} — /step", step)
-            step_result = self.client.step() or {}
+            step_result = _run_async(self.client.step()) or {}
 
             if step > 0:
                 logger.info("Step {} — /sync-weights", step)
-                self.client.sync_weights()
+                _run_async(self.client.sync_weights())
                 _write_stable_marker(self.broadcast_dir, step)
 
             # Clear ready_to_update for the next step. Native PRIME-RL does

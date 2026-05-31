@@ -135,15 +135,15 @@ def _build_ds_worker_config(arctic_cfg: ArcticConfig) -> dict | None:
 
 
 def build_arctic_client(arctic_cfg: ArcticConfig, trainer_cfg: TrainerConfig):
-    """Build and return an ArcticRLClient. Blocks until all jobs are RUNNING.
+    """Build and return an Arctic RL client. Blocks until all jobs are RUNNING.
 
-    Targets the ``arctic_training.arctic_rl`` API (ArcticTraining-dss
-    feat/zorro-skyrl branch), which carries ``ds_worker_config`` for ZoRRO and
-    uses the same ``{args, kwargs, context}`` fwd-bwd wire format as the
-    convergence-validated path. When ``arctic_cfg.use_zorro`` is set, the server
-    applies ``Qwen3ModelOncePatcher`` for prompt deduplication during training.
+    Targets the ``arctic_training.arctic_rl`` factory API (ArcticTraining-dss
+    tunji/verl_integration), which carries ``ds_worker_config`` for ZoRRO and,
+    on that branch, the Qwen3 patcher emits ``logprobs`` directly — so no
+    server-side patch is needed. ``comm_protocol="http"`` selects the HTTP client
+    (async ``fwd_bwd``/``step``/``sync_weights``; the trainer wraps them).
     """
-    from arctic_training.arctic_rl.client import ArcticRLClient
+    from arctic_training.arctic_rl.client import create_arctic_rl_client
     from arctic_training.arctic_rl.config import ArcticRLClientConfig
 
     optim_lr = getattr(trainer_cfg.optim, "lr", 1e-6)
@@ -165,6 +165,7 @@ def build_arctic_client(arctic_cfg: ArcticConfig, trainer_cfg: TrainerConfig):
 
     client_config = ArcticRLClientConfig(
         backend="local",
+        comm_protocol="http",
         model_name=trainer_cfg.model.name,
         ds_config=ds_config,
         training_config=training_config,
@@ -178,11 +179,11 @@ def build_arctic_client(arctic_cfg: ArcticConfig, trainer_cfg: TrainerConfig):
         server_logs=os.environ.get("ARCTIC_SERVER_LOGS", "1") == "1",
     )
 
-    logger.info("Initializing ArcticRLClient (model={}, training_gpus={}, sampling_gpus={})",
+    logger.info("Initializing Arctic RL client (model={}, training_gpus={}, sampling_gpus={})",
                 client_config.model_name, client_config.training_gpus, client_config.sampling_gpus)
-    client = ArcticRLClient(client_config)
+    client = create_arctic_rl_client(client_config)
     logger.info(
-        "ArcticRLClient ready: training={} sampling={} log_prob={}",
+        "Arctic RL client ready: training={} sampling={} log_prob={}",
         client.training_job_id,
         client.sampling_job_id,
         client.log_prob_job_id,

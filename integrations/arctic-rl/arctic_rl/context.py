@@ -125,6 +125,9 @@ def _zorro_layout(mbs: list[TensorMicroBatch], response_len: int) -> dict:
         "input_ids": input_ids,
         "attention_mask": attn,
         "position_ids": position_ids,
+        # The server reads prompts.shape[1] as the prompt width to derive
+        # response_len (= seq_len - prompt_width) for its packing/response math.
+        "prompts": input_ids[:, :max_plen].clone(),
         "old_log_probs_shifted": old_lp,
         "advantages": adv,
         "loss_mask": loss_mask,
